@@ -22,9 +22,29 @@ ASSET_MAP = {
 @st.cache_data(ttl=3600)
 def load_data(start_date, end_date):
     tickers = [ticker for ticker in ASSET_MAP.values() if ticker != "CASH_USD"]
-    data = yf.download(tickers, start=start_date, end=end_date, progress=False)["Adj Close"]
+    
+    # auto_adjust=False guarantees the 'Adj Close' column is present
+    df = yf.download(tickers, start=start_date, end=end_date, auto_adjust=False, progress=False)
+    
+    # Handle MultiIndex vs SingleIndex columns safely
+    if isinstance(df.columns, pd.MultiIndex):
+        if "Adj Close" in df.columns.levels[0]:
+            data = df["Adj Close"]
+        elif "Close" in df.columns.levels[0]:
+            data = df["Close"]
+        else:
+            data = df.xs(df.columns.levels[0][0], axis=1, level=0)
+    else:
+        # Fallback if yfinance flattens columns
+        if "Adj Close" in df.columns:
+            data = df["Adj Close"]
+        else:
+            data = df["Close"]
+            
     data = data.ffill().dropna()
     returns = data.pct_change().dropna()
+    
+    # Add USD zero-volatility cash return baseline
     returns["CASH_USD"] = 0.0
     return returns
 
@@ -46,13 +66,13 @@ for asset in ASSET_MAP.keys():
 
 total_alloc = sum(allocations.values())
 
-# Warning for Allocation Sum
+# Allocation Warning
 if total_alloc != 100:
     st.sidebar.warning(f"Total Allocation: **{total_alloc}%**. Weights will be auto-normalized to 100%.")
 else:
     st.sidebar.success("Total Allocation: **100%**")
 
-# Data Fetching & Processing
+# Data Fetching
 returns_df = load_data(start_date, end_date)
 
 weights = {asset: w / (total_alloc if total_alloc > 0 else 1) for asset, w in allocations.items()}
@@ -61,7 +81,7 @@ selected_tickers = [ASSET_MAP[asset] for asset in ASSET_MAP.keys()]
 
 portfolio_returns = returns_df[selected_tickers].dot(weight_vector)
 
-# Calculations (252 Trading Days)
+# Risk & Return Metrics (252 Trading Days)
 ann_return = portfolio_returns.mean() * 252
 ann_volatility = portfolio_returns.std() * np.sqrt(252)
 sharpe_ratio = (ann_return - risk_free_rate) / ann_volatility if ann_volatility > 0 else 0
@@ -69,7 +89,7 @@ sharpe_ratio = (ann_return - risk_free_rate) / ann_volatility if ann_volatility 
 cumulative_growth = (1 + portfolio_returns).cumprod() * 10000
 max_drawdown = ((cumulative_growth.cummax() - cumulative_growth) / cumulative_growth.cummax()).max()
 
-# Top Metrics Row
+# Metrics Display Row
 col1, col2, col3, col4, col5 = st.columns(5)
 col1.metric("Annualized Return", f"{ann_return:.2%}")
 col2.metric("Annualized Volatility", f"{ann_volatility:.2%}")
@@ -79,7 +99,7 @@ col5.metric("Ending Value ($10k)", f"${cumulative_growth.iloc[-1]:,.2f}")
 
 st.markdown("---")
 
-# Chart Layout
+# Layout Charts
 col_chart, col_weights = st.columns([3, 1])
 
 with col_chart:
